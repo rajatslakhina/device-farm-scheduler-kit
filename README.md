@@ -11,9 +11,9 @@ next to the one this repo argues for, runs all four over the same recorded workl
 the numbers decide.
 
 > **The finding that matters:** the obvious implementation of "be fair, but exploit the cache"
-> lands a **38%** warm hit rate — three points above pure round-robin, and 45 points below what
-> the cache can actually give you. Fairness and affinity do not compose by layering. They
-> compose by layering *plus a bounded delay*, which takes the same workload to **58%**.
+> lands a **38%** warm hit rate — thirteen points above pure round-robin, and 45 points below
+> what the cache can actually give you. Fairness and affinity do not compose by layering. They
+> compose by layering *plus a bounded delay*, which takes the same workload to **62%**.
 
 ---
 
@@ -70,7 +70,7 @@ than by age.
 | Affinity-first | 248 | **83%** | 49 min | 659 s | **`payments`** (the smallest tenant) |
 | Strict fairness | 140 | 25% | 139 min | 1080 s | `checkout` |
 | Naive layering (DRR + affinity) | 142 | 38% | 137 min | 1080 s | `checkout` |
-| **DRR + delay scheduling** | 220 | **58%** | 67 min | **404 s** | `checkout` |
+| **DRR + delay scheduling** | 240 | **62%** | **48 min** | **348 s** | `checkout` |
 
 Affinity-first maximises the cache by construction and hands the farm to whoever already had it:
 warmth is a proxy for "ran recently", so the small tenant's chain is never resident, so it never
@@ -96,11 +96,18 @@ Setting `maxSkips: 0` reduces the policy to the naive layering in row three, and
 the hit rate collapses when you do. The delay-scheduling component is load-bearing by
 measurement.
 
-**The honest other half:** affinity-first still wins the hit-rate column, 83% to 58%. Fairness is
+**The honest other half:** affinity-first still wins the hit-rate column, 83% to 62%. Fairness is
 not free, and there is a test named `testAffinityFirstStillWinsTheHitRateColumn` whose only job is
-to fail if this README ever starts claiming otherwise. What the layered policy buys for those 25
-points is a worst-case wait cut from 659 s to 404 s, and a small tenant that is no longer last in
+to fail if this README ever starts claiming otherwise. What the layered policy buys for those 21
+points is a worst-case wait cut from 659 s to 348 s, and a small tenant that is no longer last in
 every queue.
+
+**And the part worth staring at:** the layered policy takes *more than twice as many cache misses*
+as affinity-first — 91 against 42 — while paying **less** total restore time, 48 minutes against
+49. Its average miss costs 32 s; affinity-first's costs 70 s. That is the whole mechanism in one
+pair of numbers. Delay scheduling does not chase a higher hit rate; it changes which misses you
+take, trading a handful of cheap app-layer restores for the base-image rewrites that actually hurt.
+A hit-rate column alone would have called this policy the loser.
 
 ### 3. Don't fit a distribution to a workload whose defining feature is correlated bursts
 
@@ -180,13 +187,28 @@ saturated value for every trapping input rather than asserting "doesn't crash".
 
 ## Verification
 
-**81 XCTest cases, 0 failures.** Clean build (`rm -rf .build`) with
+**97 XCTest cases, 0 failures.** Clean build (`rm -rf .build`) with
 `swift build -Xswiftc -warnings-as-errors`: 0 warnings, 0 errors, Swift 6 language mode.
 
-CI runs on every push — see the repo's **Actions** tab. Two jobs: Linux builds and tests the
-whole package with warnings-as-errors, so the zero-warning claim is machine-enforced rather than
-asserted here; macOS does the same and additionally compiles the SwiftUI module for
+CI runs on every push — see the repo's **Actions** tab. Three checks: a grep that fails the build
+if any `await` appears in `Sources/` (see below); Linux building and testing the whole package
+with warnings-as-errors, so the zero-warning claim is machine-enforced rather than asserted here;
+and macOS doing the same plus compiling the SwiftUI module for
 `generic/platform=iOS Simulator`, which the Linux job cannot reach.
+
+**Every number in this README is a test.** `GoldenNumbersTests` pins all of them — each policy's
+runs started, hit rate, restore minutes, worst wait and worst-served tenant, the arrival
+histogram, the full sizing curve, both figures in the store differential, and the six-host
+numbers the demo app's README quotes. The rest of the suite asserts orderings, which is the right
+shape for the arguments but would let the *figures* drift while CI stayed green. Change the
+scheduler and this file fails until the prose is updated in the same commit.
+
+**Not verified: nothing here has been run on a Simulator, and no screenshots exist anywhere in
+either repository.** This was built by an unattended scheduled task; Simulator access was
+requested three times and refused each time with *"Computer-use access to 'Simulator' can't be
+approved during a scheduled run."* The companion demo app's CI compiles it for an iOS Simulator
+destination — that is a strictly weaker claim than having launched it, and the two are kept
+separate here deliberately.
 
 **The tests are built so they can fail.** A checker that can only be pointed at the implementation
 it is checking proves nothing, so:
@@ -201,18 +223,24 @@ it is checking proves nothing, so:
 - `testAffinityFirstStillWinsTheHitRateColumn` fails if this README's honesty about the trade-off
   ever stops being true.
 
-Known limits, stated: the store differential is a **pressure-regime** result — give the store
-enough room and both policies converge, and at one capacity in the sweep the chain-aware store
-was marginally worse. `maxSkips: 12` was chosen by sweeping the parameter on the reference
-workload; it is not a universal constant. Everything here is measured against one fixture, not
-against a real fleet.
+Known limits, stated — and, where they are checkable, checked:
+
+- The store differential is a **pressure-regime** result. Give the store enough room and both
+  policies pay identically; at one capacity in the sweep the chain-aware store is *worse*.
+  `testStoreAdvantageIsCapacityDependentAsDocumented` asserts all three regimes, so this caveat
+  fails the build if it ever stops being true — an admission nobody verifies is just modesty.
+- `maxSkips: 24` is the shipped default because a sweep says so, and the sweep ships as
+  `testSkipBoundSweepShapeIsStable`. It is not a universal constant: it is the knee for *this*
+  workload, and the test pins the shape rather than the value's optimality in general.
+- Everything here is measured against one fixture on a simulated fleet. No VM has ever booted.
+  The arithmetic is real; the farm is not.
 
 ---
 
 ## Usage
 
 ```swift
-.package(url: "https://github.com/OWNER/device-farm-scheduler-kit.git", from: "1.0.0")
+.package(url: "https://github.com/rajatslakhina/device-farm-scheduler-kit.git", from: "1.0.0")
 ```
 
 ```swift
@@ -220,7 +248,7 @@ import DeviceFarmScheduler
 
 let coordinator = FarmCoordinator(
     state: ReferenceWorkload.makeSpec().makeState(),
-    policy: LayeredAffinityFairPolicy(),          // maxSkips: 12 by default
+    policy: LayeredAffinityFairPolicy(),          // maxSkips: 24 by default
     admission: AdmissionController(policy: ReferenceWorkload.makeAdmissionPolicy()),
     leaseTTLTicks: 30
 )
@@ -246,8 +274,15 @@ workload as a parameter rather than hardcoding one.
 
 ## Demo app
 
-The companion app that runs this on a Simulator lives in its own repository:
-**(added after the companion repo is pushed — see below)**
+A SwiftUI console that renders this comparison lives in its own repository and consumes this
+package as a remote Swift package dependency, constrained to the `1.x` line:
+**[device-farm-scheduler-demo-app](https://github.com/rajatslakhina/device-farm-scheduler-demo-app)**
+
+It runs the same workload on a deliberately tighter **six**-host fleet, where the contention makes
+the difference stark: affinity-first posts a **91%** warm hit rate while running the smallest
+tenant's suite **twice** in thirty minutes. Those six-host figures are pinned by
+`testDemoAppSixHostNumbersArePinned` in this repository, because the demo has no test target of
+its own to pin them in.
 
 ## Requirements
 
