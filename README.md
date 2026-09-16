@@ -187,7 +187,7 @@ saturated value for every trapping input rather than asserting "doesn't crash".
 
 ## Verification
 
-**97 XCTest cases, 0 failures.** Clean build (`rm -rf .build`) with
+**98 XCTest cases, 0 failures.** Clean build (`rm -rf .build`) with
 `swift build -Xswiftc -warnings-as-errors`: 0 warnings, 0 errors, Swift 6 language mode.
 
 CI runs on every push — see the repo's **Actions** tab. Three checks: a grep that fails the build
@@ -225,13 +225,21 @@ it is checking proves nothing, so:
 
 Known limits, stated — and, where they are checkable, checked:
 
-- The store differential is a **pressure-regime** result. Give the store enough room and both
-  policies pay identically; at one capacity in the sweep the chain-aware store is *worse*.
-  `testStoreAdvantageIsCapacityDependentAsDocumented` asserts all three regimes, so this caveat
-  fails the build if it ever stops being true — an admission nobody verifies is just modesty.
-- `maxSkips: 24` is the shipped default because a sweep says so, and the sweep ships as
-  `testSkipBoundSweepShapeIsStable`. It is not a universal constant: it is the knee for *this*
-  workload, and the test pins the shape rather than the value's optimality in general.
+- The store differential is a **pressure-regime** result, and the regimes are not tidy. Too
+  tight (≤7 800) and neither policy has a choice, so both pay 829 s. In the pressure band
+  (8 000–8 500) chain-aware wins. At **9 000 it loses** — 628 s against 620 s. It wins again at
+  9 500–10 000, and from 11 000 up nothing is ever evicted and both pay 310 s.
+  `testStoreAdvantageIsCapacityDependentAsDocumented` asserts all four regimes including the
+  loss, so this caveat fails the build if it stops being true — an admission nobody verifies is
+  just modesty.
+- `maxSkips: 24` is the shipped default, and the sweep behind it ships as
+  `testSkipBoundSweepShapeIsStable` — **every** value in `0...32`, not a flattering subset.
+  There is no clean knee. 24 wins runs-started (240) and hit rate (62%) across the range and
+  loses the other two columns: best worst-case wait is 23 (327 s vs 348 s) and least restore
+  time is 30, by **eight seconds across a thirty-minute window**. Values 21–30 are within noise
+  of each other. The test asserts both losses, so this caveat cannot decay into "dominates".
+  An earlier revision of this README did claim domination, on the strength of a sweep that
+  visited four hand-picked values.
 - Everything here is measured against one fixture on a simulated fleet. No VM has ever booted.
   The arithmetic is real; the farm is not.
 
@@ -275,7 +283,7 @@ workload as a parameter rather than hardcoding one.
 ## Demo app
 
 A SwiftUI console that renders this comparison lives in its own repository and consumes this
-package as a remote Swift package dependency, constrained to the `1.x` line:
+package as a remote Swift package dependency, constrained to the `2.x` line:
 **[device-farm-scheduler-demo-app](https://github.com/rajatslakhina/device-farm-scheduler-demo-app)**
 
 It runs the same workload on a deliberately tighter **six**-host fleet, where the contention makes
