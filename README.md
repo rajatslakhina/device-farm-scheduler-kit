@@ -187,14 +187,20 @@ saturated value for every trapping input rather than asserting "doesn't crash".
 
 ## Verification
 
-**98 XCTest cases, 0 failures.** Clean build (`rm -rf .build`) with
+**99 XCTest cases, 0 failures.** Clean build (`rm -rf .build`) with
 `swift build -Xswiftc -warnings-as-errors`: 0 warnings, 0 errors, Swift 6 language mode.
 
 CI runs on every push — see the repo's **Actions** tab. Three checks: a grep that fails the build
-if any `await` appears in `Sources/` (see below); Linux building and testing the whole package
-with warnings-as-errors, so the zero-warning claim is machine-enforced rather than asserted here;
-and macOS doing the same plus compiling the SwiftUI module for
-`generic/platform=iOS Simulator`, which the Linux job cannot reach.
+if any `await` **or `async let`** appears in `Sources/` (the latter contains no `await` token and
+is still a suspension point, which an earlier version of this check missed); Linux building and
+testing the whole package with warnings-as-errors, so the zero-warning claim is machine-enforced
+rather than asserted here; and macOS doing the same plus compiling the SwiftUI module for
+`generic/platform=iOS Simulator`, which the Linux job cannot reach — a SwiftUI type-check
+failure got through to `main` once precisely because Linux compiles that module to nothing.
+
+That Actions tab has fewer runs than `main` has commits: the red runs were deleted after being
+diagnosed and fixed, and the cancelled ones were artifacts of pushing several commits in a row
+with `cancel-in-progress` enabled. Saying so here rather than letting the gaps look accidental.
 
 **Every number in this README is a test.** `GoldenNumbersTests` pins all of them — each policy's
 runs started, hit rate, restore minutes, worst wait and worst-served tenant, the arrival
@@ -225,13 +231,27 @@ it is checking proves nothing, so:
 
 Known limits, stated — and, where they are checkable, checked:
 
-- The store differential is a **pressure-regime** result, and the regimes are not tidy. Too
-  tight (≤7 800) and neither policy has a choice, so both pay 829 s. In the pressure band
-  (8 000–8 500) chain-aware wins. At **9 000 it loses** — 628 s against 620 s. It wins again at
-  9 500–10 000, and from 11 000 up nothing is ever evicted and both pay 310 s.
-  `testStoreAdvantageIsCapacityDependentAsDocumented` asserts all four regimes including the
-  loss, so this caveat fails the build if it stops being true — an admission nobody verifies is
-  just modesty.
+- The store differential is a **pressure-regime** result, and the regimes are not tidy:
+
+  | capacity | global LRU | chain-aware | |
+  |---|---|---|---|
+  | ≤7 000 | 871 s | **7 596 s** | chain-aware is 8.7× **worse** |
+  | 7 100–7 200 | 871 s | 871 s | tie |
+  | 7 300–7 900 | 829 s | 829 s | tie |
+  | 8 000–8 800 | 829 s | 640 s | chain-aware wins |
+  | **9 000** | 620 s | **628 s** | chain-aware **loses** |
+  | 9 200–10 500 | 589 s | 418 s | wins again |
+  | ≥11 000 | 310 s | 310 s | tie — nothing is ever evicted |
+
+  The bottom row of that table is the most interesting and was missed twice. Below 7 100 a
+  chain no longer fits at all, and `SnapshotStore.admit` **refuses** it rather than evicting its
+  way toward a state that still cannot boot — so every mount pays a full cold restore, while
+  global LRU admits partial garbage and looks cheaper. That is the correct behaviour and it is
+  genuinely worse on this metric; the metric is just not measuring the thing that matters there.
+
+  `testStoreAdvantageIsCapacityDependentAsDocumented` asserts **one capacity in each of these
+  six regimes**, including the loss at 9 000 and the refusal cliff at 7 000. It does not assert
+  every capacity in every range, so it pins the shape rather than the boundaries.
 - `maxSkips: 24` is the shipped default, and the sweep behind it ships as
   `testSkipBoundSweepShapeIsStable` — **every** value in `0...32`, not a flattering subset.
   There is no clean knee. 24 wins runs-started (240) and hit rate (62%) across the range and
