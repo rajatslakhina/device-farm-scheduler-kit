@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux · clean build (warnings as errors) + tests
+    runs-on: ubuntu-latest
+    container: swift:6.0
+    steps:
+      - uses: actions/checkout@v4
+
+      # `swift build` on an up-to-date tree compiles nothing and still prints
+      # "Build complete!", which is evidence of nothing. Removing .build first
+      # is what makes the zero-warning claim mean something.
+      - name: Clean build with warnings as errors
+        run: |
+          rm -rf .build
+          swift build -Xswiftc -warnings-as-errors
+
+      - name: Test
+        run: swift test
+
+  apple:
+    name: macOS · build + tests + iOS Simulator compile
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Clean build with warnings as errors
+        run: |
+          rm -rf .build
+          swift build -Xswiftc -warnings-as-errors
+
+      - name: Test
+        run: swift test
+
+      # The Linux job cannot reach this: the SwiftUI module is empty there,
+      # because it is guarded on `canImport(SwiftUI)`. A generic destination is
+      # used deliberately — pinning to a named device ties the job to whichever
+      # simulator runtimes happen to be on that day's runner image, and a
+      # compile-only check needs no device to exist.
+      - name: Compile the SwiftUI module for iOS Simulator
+        run: |
+          xcodebuild build \
+            -scheme DeviceFarmSchedulerUI \
+            -destination 'generic/platform=iOS Simulator'
