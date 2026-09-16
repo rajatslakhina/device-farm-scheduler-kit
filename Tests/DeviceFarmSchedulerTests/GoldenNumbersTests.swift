@@ -243,26 +243,53 @@ final class GoldenNumbersTests: XCTestCase {
             return (naiveMillis, goodMillis)
         }
 
-        // Under pressure: chain-aware wins.
+        // STARVED: too small to hold a second app layer at all, so neither
+        // policy has a choice left to make and both pay the same. An earlier
+        // version of this test labelled 7 300 "roomy" and used it as the slack
+        // case — it is tighter than the baseline, not roomier, and equality
+        // there proves nothing about slack.
+        let starved = restoreCosts(capacity: 7_300)
+        XCTAssertEqual(
+            starved.good, starved.naive,
+            "with no room to keep a second working set, eviction policy cannot matter"
+        )
+        XCTAssertEqual(starved.good, 829_000)
+
+        // PRESSURE: the regime the README's headline number comes from.
         let underPressure = restoreCosts(capacity: 8_000)
+        XCTAssertEqual(underPressure.naive, 829_000)
+        XCTAssertEqual(underPressure.good, 640_000)
         XCTAssertLessThan(underPressure.good, underPressure.naive)
 
-        // With slack, the two converge and the eviction policy stops mattering.
-        let roomy = restoreCosts(capacity: 7_300)
-        XCTAssertEqual(
-            roomy.good, roomy.naive,
-            "with a working set that never forces a cross-app eviction, both policies "
-                + "should pay identically — this is why the README calls the result "
-                + "pressure-regime rather than universal"
-        )
-
-        // And at one capacity in the sweep the chain-aware store is worse. The
-        // README says so; this is what makes that admission checkable.
+        // ADVERSE: at one capacity the chain-aware store is genuinely worse.
+        // The README admits this; asserting it is what makes the admission
+        // checkable rather than decorative.
         let adverse = restoreCosts(capacity: 9_000)
+        XCTAssertEqual(adverse.naive, 620_000)
+        XCTAssertEqual(adverse.good, 628_000)
         XCTAssertGreaterThan(
             adverse.good, adverse.naive,
-            "README admits chain-aware loses at one capacity — if that stops being "
-                + "true, delete the caveat rather than leaving a false admission"
+            "if chain-aware stops losing here, delete the caveat rather than "
+                + "leaving a false admission in the README"
+        )
+
+        // And a second win band above it, which is why the curve cannot be
+        // summarised as "wins under pressure, loses with slack".
+        let aboveAdverse = restoreCosts(capacity: 10_000)
+        XCTAssertLessThan(aboveAdverse.good, aboveAdverse.naive)
+
+        // SLACK: genuinely enough room for the whole working set. Here the two
+        // converge for the right reason — nothing is ever evicted.
+        let roomy = restoreCosts(capacity: 11_000)
+        XCTAssertEqual(
+            roomy.good, roomy.naive,
+            "with room for the entire working set, no eviction happens and the "
+                + "policies are indistinguishable"
+        )
+        XCTAssertEqual(roomy.good, 310_000)
+        XCTAssertLessThan(
+            roomy.good, underPressure.good,
+            "the slack regime should be cheaper than the pressure regime"
         )
     }
 
@@ -288,13 +315,21 @@ final class GoldenNumbersTests: XCTestCase {
         let reports = FarmSimulation.compareShippedPolicies(spec: spec)
         guard reports.count == 3 else { return XCTFail("expected three reports") }
 
+        // Layered row, every cell the demo README prints.
         XCTAssertEqual(reports[0].dispatched, 182)
         XCTAssertEqual(reports[0].warmHitRatePercent, 56)
+        XCTAssertEqual(reports[0].totalRestoreMillis / 60_000, 38)
         XCTAssertEqual(reports[0].worstTenantWaitTicks, 752)
+        XCTAssertEqual(reports[0].worstTenant, ReferenceWorkload.checkout)
         XCTAssertEqual(reports[0].dispatched(for: ReferenceWorkload.payments), 15)
+        XCTAssertEqual(reports[0].stillQueued(for: ReferenceWorkload.payments), 5)
 
+        // Affinity-first row, including the per-tenant table.
         XCTAssertEqual(reports[1].dispatched, 192)
         XCTAssertEqual(reports[1].warmHitRatePercent, 91, "demo README: a 91% hit rate...")
+        XCTAssertEqual(reports[1].totalRestoreMillis / 60_000, 27)
+        XCTAssertEqual(reports[1].worstTenantWaitTicks, 1_410)
+        XCTAssertEqual(reports[1].worstTenant, ReferenceWorkload.payments)
         XCTAssertEqual(
             reports[1].dispatched(for: ReferenceWorkload.payments), 2,
             "...while the smallest tenant runs twice in thirty minutes"
@@ -305,20 +340,58 @@ final class GoldenNumbersTests: XCTestCase {
         XCTAssertEqual(reports[1].stillQueued(for: ReferenceWorkload.search), 31)
         XCTAssertEqual(reports[1].worstWait(for: ReferenceWorkload.search), 1_320)
         XCTAssertEqual(reports[1].dispatched(for: ReferenceWorkload.checkout), 146)
+        XCTAssertEqual(reports[1].stillQueued(for: ReferenceWorkload.checkout), 10)
+        XCTAssertEqual(reports[1].worstWait(for: ReferenceWorkload.checkout), 496)
 
+        // Strict fairness row.
         XCTAssertEqual(reports[2].dispatched, 94)
         XCTAssertEqual(reports[2].warmHitRatePercent, 32)
+        XCTAssertEqual(reports[2].totalRestoreMillis / 60_000, 111)
+        XCTAssertEqual(reports[2].worstTenantWaitTicks, 1_320)
+        XCTAssertEqual(reports[2].worstTenant, ReferenceWorkload.checkout)
+
+        // The demo README's admission paragraph: the layered run's worst wait
+        // exceeds the configured budget, and a tenant exceeds the per-tenant cap.
+        let policy = ReferenceWorkload.makeAdmissionPolicy()
+        XCTAssertEqual(policy.waitBudgetTicks, 300)
+        XCTAssertGreaterThan(
+            reports[0].worstTenantWaitTicks, policy.waitBudgetTicks,
+            "demo README claims the console reports a wait-budget miss on this fleet"
+        )
+        XCTAssertEqual(policy.maxQueuedPerTenant, 96)
+        XCTAssertEqual(
+            reports[2].stillQueued(for: ReferenceWorkload.checkout), 119,
+            "demo README: checkout's backlog reaches 119 under strict fairness"
+        )
+        XCTAssertGreaterThan(
+            reports[2].stillQueued(for: ReferenceWorkload.checkout), policy.maxQueuedPerTenant,
+            "an unrestricted replay should exceed the quota admission control would enforce"
+        )
+    }
+
+    /// The naive-layering row's worst-served tenant, which the library README
+    /// prints and nothing else pinned.
+    func testNaiveLayeringWorstServedTenantIsPinned() {
+        let spec = ReferenceWorkload.makeSpec()
+        let r = FarmSimulation.run(
+            spec: spec, policy: LayeredAffinityFairPolicy(maxSkips: 0), trace: spec.arrivalTrace()
+        )
+        XCTAssertEqual(r.worstTenant, ReferenceWorkload.checkout)
+        XCTAssertEqual(r.jobsLeftQueued, 109)
     }
 
     // MARK: - The skip-bound sweep
 
     /// `maxSkips: 24` is the shipped default and the README says it came from a
-    /// sweep. This is the sweep.
+    /// sweep. This is the sweep — **every** value in `0...32`, not a flattering
+    /// subset.
     ///
-    /// The shape is the claim, and it is not the tidy monotonic trade-off theory
-    /// predicts: below the knee the metrics improve *together*, and the real
-    /// trade-off only appears past it, where the smallest tenant becomes the
-    /// worst-served one and its wait grows without bound.
+    /// An earlier version of this test iterated `[0, 8, 12, 20]`, which happen
+    /// to be four values the default beats, and concluded the default
+    /// "dominates every smaller value". It does not: 21, 22 and 23 all deliver
+    /// a better worst-case wait. That is asserted below, so the README's caveat
+    /// cannot quietly stop being true. A test that only visits the points which
+    /// confirm the claim is the same defect as having no test.
     func testSkipBoundSweepShapeIsStable() {
         let spec = ReferenceWorkload.makeSpec()
         let trace = spec.arrivalTrace()
@@ -329,46 +402,81 @@ final class GoldenNumbersTests: XCTestCase {
             )
         }
 
-        let none = run(0)
-        let shipped = run(24)
-        let excessive = run(64)
-
-        // The default dominates every smaller value on every metric, which is
-        // why there is no trade-off to argue about below the knee.
-        for smaller in [0, 8, 12, 20] {
-            let other = run(smaller)
-            XCTAssertGreaterThanOrEqual(
-                shipped.dispatched, other.dispatched,
-                "maxSkips 24 should not start fewer runs than \(smaller)"
-            )
-            XCTAssertGreaterThanOrEqual(
-                shipped.warmHitRatePercent, other.warmHitRatePercent,
-                "maxSkips 24 should not land a lower hit rate than \(smaller)"
-            )
-            XCTAssertLessThanOrEqual(
-                shipped.totalRestoreMillis, other.totalRestoreMillis,
-                "maxSkips 24 should not pay more restore time than \(smaller)"
-            )
-            XCTAssertLessThanOrEqual(
-                shipped.worstTenantWaitTicks, other.worstTenantWaitTicks,
-                "maxSkips 24 should not make anyone wait longer than \(smaller)"
-            )
+        let sweep = (0...32).map { (skips: $0, report: run($0)) }
+        guard let shipped = sweep.first(where: { $0.skips == 24 })?.report else {
+            return XCTFail("24 missing from the sweep")
         }
 
-        // Past the knee, delay scheduling degenerates into the starvation it
-        // exists to prevent — and it lands on the smallest tenant.
-        XCTAssertGreaterThan(excessive.worstTenantWaitTicks, shipped.worstTenantWaitTicks)
-        XCTAssertEqual(
-            excessive.worstTenant, ReferenceWorkload.payments,
-            "an unbounded skip budget should starve the small tenant"
+        // The two columns the default genuinely wins, across the whole range.
+        for point in sweep where point.skips != 24 {
+            XCTAssertGreaterThanOrEqual(
+                shipped.dispatched, point.report.dispatched,
+                "maxSkips 24 should start the most runs; \(point.skips) started more"
+            )
+            XCTAssertGreaterThanOrEqual(
+                shipped.warmHitRatePercent, point.report.warmHitRatePercent,
+                "maxSkips 24 should land the best hit rate; \(point.skips) was higher"
+            )
+        }
+        XCTAssertEqual(shipped.dispatched, 240)
+        XCTAssertEqual(shipped.warmHitRatePercent, 62)
+
+        // The two columns it does NOT win. Pinned so the honesty is enforced
+        // and cannot quietly drift into an unqualified "dominates".
+        let bestWorstWait = sweep.min {
+            $0.report.worstTenantWaitTicks < $1.report.worstTenantWaitTicks
+        }
+        XCTAssertEqual(bestWorstWait?.skips, 23, "23 holds the best worst-case wait")
+        XCTAssertEqual(bestWorstWait?.report.worstTenantWaitTicks, 327)
+        XCTAssertEqual(shipped.worstTenantWaitTicks, 348)
+
+        let leastRestore = sweep.min { $0.report.totalRestoreMillis < $1.report.totalRestoreMillis }
+        XCTAssertEqual(leastRestore?.skips, 30, "30 pays the least restore time")
+        XCTAssertEqual(leastRestore?.report.totalRestoreMillis, 2_913_000)
+        XCTAssertEqual(shipped.totalRestoreMillis, 2_921_000)
+        XCTAssertGreaterThan(
+            shipped.totalRestoreMillis, leastRestore?.report.totalRestoreMillis ?? Int.max,
+            "the shipped default does not win the restore column either, and the README says so"
         )
+        // ...by 8 seconds across a 30-minute window, which is the point: the
+        // differences in this band are noise, not a ranking.
+        XCTAssertEqual((shipped.totalRestoreMillis - 2_913_000) / 1_000, 8)
+
+        // The curve is noisy rather than monotonic, which is the README's point.
+        // If it ever becomes monotonic, the prose describing it as noise is wrong.
+        let waits = sweep.filter { (10...24).contains($0.skips) }.map(\.report.worstTenantWaitTicks)
+        XCTAssertFalse(
+            waits == waits.sorted() || waits == waits.sorted(by: >),
+            "worst-case wait over 10...24 was expected to be non-monotonic"
+        )
+
+        // Stable at the extremes: mechanism off is worst on every axis.
+        guard let off = sweep.first(where: { $0.skips == 0 })?.report else {
+            return XCTFail("0 missing from the sweep")
+        }
+        XCTAssertLessThan(off.warmHitRatePercent, shipped.warmHitRatePercent)
+        XCTAssertLessThan(off.dispatched, shipped.dispatched)
+        XCTAssertGreaterThan(off.totalRestoreMillis, shipped.totalRestoreMillis)
+        XCTAssertGreaterThan(off.worstTenantWaitTicks, shipped.worstTenantWaitTicks)
+
+        // Past ~25 the smallest tenant becomes the worst-served one and stays
+        // that way through the range the README describes.
+        for skips in 25...32 {
+            XCTAssertEqual(
+                sweep.first(where: { $0.skips == skips })?.report.worstTenant,
+                ReferenceWorkload.payments,
+                "at maxSkips \(skips) the small tenant should be worst-served"
+            )
+        }
         XCTAssertEqual(shipped.worstTenant, ReferenceWorkload.checkout)
+
+        // And a far-out value shows the degeneration the doc comment describes.
+        let excessive = run(64)
+        XCTAssertEqual(excessive.worstTenant, ReferenceWorkload.payments)
+        XCTAssertEqual(excessive.worstTenantWaitTicks, 858)
         XCTAssertLessThan(
             excessive.dispatched(for: ReferenceWorkload.payments),
             shipped.dispatched(for: ReferenceWorkload.payments)
         )
-
-        // And the floor: removing the mechanism is worse than any setting of it.
-        XCTAssertLessThan(none.warmHitRatePercent, shipped.warmHitRatePercent)
     }
 }
