@@ -146,5 +146,32 @@ public final class FarmConsoleModel {
     public var waitBudgetOverrunTicks: Int {
         max(0, Saturating.subtract(selectedReport?.worstTenantWaitTicks ?? 0, waitBudgetTicks))
     }
+
+    /// Headline for the admission banner.
+    ///
+    /// Built here rather than inline in the view for a boring but real reason:
+    /// concatenating this many string fragments and a ternary inside a
+    /// `Text(...)` inside an `HStack` defeats the SwiftUI type-checker — it
+    /// fails with "unable to type-check this expression in reasonable time",
+    /// which is a compile error, not a warning. Plain `String` properties on
+    /// the model type-check instantly and the view just interpolates them.
+    public var admissionHeadline: String {
+        breachesWaitBudget
+            ? "Wait budget missed by \(waitBudgetOverrunTicks)s"
+            : "Within the \(waitBudgetTicks)s wait budget"
+    }
+
+    /// Body text for the admission banner, including the disclosure that this
+    /// replay does not apply admission control at all.
+    public var admissionDetail: String {
+        var text = "This replay admits every arrival — admission control is not applied — "
+        text += "so you are seeing the unclipped cost against the \(waitBudgetTicks)s budget "
+        text += "AdmissionController would have quoted."
+        if exceedsTenantQuota {
+            text += " A tenant also ends up holding more than the "
+            text += "\(maxQueuedPerTenant)-job per-tenant cap."
+        }
+        return text
+    }
 }
 #endif

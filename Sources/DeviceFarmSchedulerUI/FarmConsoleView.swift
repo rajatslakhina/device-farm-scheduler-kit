@@ -148,43 +148,34 @@ public struct FarmConsoleView: View {
     // MARK: - Admission promise
 
     /// What the farm promised at submit time, against what it delivered.
+    ///
+    /// Every string and colour is precomputed on the model. Building them
+    /// inline here — a ternary plus five concatenated fragments inside a
+    /// `Text` inside an `HStack` — makes the SwiftUI type-checker give up with
+    /// "unable to type-check this expression in reasonable time", which is a
+    /// hard compile error. Linux CI cannot catch that, because the whole module
+    /// compiles to nothing there; the macOS job exists for exactly this.
     private var admissionBanner: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(
-                systemName: model.breachesWaitBudget
-                    ? "exclamationmark.triangle.fill"
-                    : "checkmark.seal.fill"
-            )
-            .foregroundStyle(model.breachesWaitBudget ? .orange : .green)
+        let breached = model.breachesWaitBudget
+        let tint: Color = breached ? .orange : .green
+        let symbol = breached ? "exclamationmark.triangle.fill" : "checkmark.seal.fill"
+
+        return HStack(alignment: .top, spacing: 10) {
+            Image(systemName: symbol)
+                .foregroundStyle(tint)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(
-                    model.breachesWaitBudget
-                        ? "Wait budget missed by \(model.waitBudgetOverrunTicks)s"
-                        : "Within the \(model.waitBudgetTicks)s wait budget"
-                )
-                .font(.footnote.weight(.semibold))
-                Text(
-                    "This replay admits every arrival — admission control is not "
-                        + "applied — so you are seeing the unclipped cost against the "
-                        + "\(model.waitBudgetTicks)s budget AdmissionController would have "
-                        + "quoted."
-                        + (model.exceedsTenantQuota
-                            ? " A tenant also ends up holding more than the "
-                                + "\(model.maxQueuedPerTenant)-job per-tenant cap."
-                            : "")
-                )
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+                Text(model.admissionHeadline)
+                    .font(.footnote.weight(.semibold))
+                Text(model.admissionDetail)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)
         }
         .padding(12)
-        .background(
-            (model.breachesWaitBudget ? Color.orange : Color.green).opacity(0.10),
-            in: RoundedRectangle(cornerRadius: 12)
-        )
+        .background(tint.opacity(0.10), in: RoundedRectangle(cornerRadius: 12))
     }
 
     // MARK: - Per-tenant
