@@ -117,26 +117,47 @@ public struct LayeredAffinityFairPolicy: PlacementPolicy {
     /// This is the fairness bound: no tenant is ever delayed more than this many
     /// of its own turns.
     ///
-    /// The default of 24 comes from an actual sweep on the reference workload,
-    /// shipped as `testSkipBoundSweepShapeIsStable`. The shape is not the tidy
-    /// monotonic trade-off theory suggests, and the numbers are worth stating:
+    /// The default of 24 comes from sweeping every value in `0...32` on the
+    /// reference workload, shipped as `testSkipBoundSweepShapeIsStable`.
+    ///
+    /// **The sweep is noisy, and pretending otherwise would be the easy lie
+    /// here.** There is no clean knee. Worst-case wait bounces between 327 s and
+    /// 455 s across `10...24` with no usable trend, because the workload is
+    /// bursty and deterministic: a small change in skip budget reshuffles which
+    /// host happens to be idle when a burst lands, and that reshuffling swamps
+    /// the effect being measured.
     ///
     /// ```
     /// maxSkips   started   warm    restore   worst wait   worst-served
-    ///        0       142    38%    137 min       1080 s   checkout
-    ///        8       222    54%     68 min        364 s   checkout
-    ///       12       220    58%     67 min        404 s   checkout
-    ///       24       240    62%     48 min        348 s   checkout   <- default
-    ///       40       238    60%     48 min        660 s   payments
+    ///        0       142    38%    137 min       1080 s   checkout   (mechanism off)
+    ///       10       231    54%     61 min        348 s   checkout
+    ///       17       220    54%     68 min        429 s   payments
+    ///       21       239    60%     49 min        336 s   checkout
+    ///       23       239    60%     49 min        327 s   checkout   <- best worst-wait
+    ///       24       240    62%     48 min        348 s   checkout   <- shipped
+    ///       30       238    58%     48 min        425 s   payments
     ///       64       235    60%     48 min        858 s   payments
     /// ```
     ///
-    /// Below the knee the metrics move together rather than trading off, so
-    /// there is no tuning dilemma there — 24 simply dominates every smaller
-    /// value on all five. The genuine trade-off only appears *past* it: from
-    /// about 28 onward the worst-served tenant flips to the smallest one and
-    /// its wait climbs without bound, which is delay scheduling degenerating
-    /// into the starvation it exists to prevent.
+    /// What *is* stable is the behaviour at the extremes. At 0 the mechanism is
+    /// off and every metric is at its worst. From about 20 upward, throughput
+    /// and restore time plateau near their best. Past about 25 the worst-served
+    /// tenant becomes the smallest one and stays that way — delay scheduling
+    /// degenerating into the starvation it exists to prevent.
+    ///
+    /// 24 is shipped because across `0...32` it is the maximum on runs started
+    /// (240) and on warm hit rate (62%) — the two columns a farm's users feel.
+    /// It wins neither of the other two:
+    ///
+    /// - best worst-case wait is **23**, at 327 s against 348 s;
+    /// - least restore time is **30**, at 2 913 000 ms against 2 921 000 ms —
+    ///   a difference of **eight seconds across a thirty-minute window**.
+    ///
+    /// Both are asserted by the sweep test, so neither caveat can quietly
+    /// decay into an unqualified "dominates". That eight-second gap is the
+    /// honest summary of this whole band: 21 through 30 are within noise of one
+    /// another, any of them is defensible, and quoting a precise optimum from
+    /// this curve is reading noise as signal.
     public let maxSkips: Int
 
     /// The warmth a placement must already have for the tenant to take it

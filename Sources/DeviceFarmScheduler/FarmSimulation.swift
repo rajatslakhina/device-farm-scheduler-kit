@@ -106,6 +106,16 @@ public struct WorkloadSpec: Sendable {
     /// per unit.
     public static let maxHostCount = 4096
 
+    /// Ceiling on arrivals generated for a single tick, covering
+    /// `baseArrivalsPerTick`, `burstSize` and `burstJitter`. A burst larger than
+    /// this is a typo, not a workload.
+    public static let maxArrivalsPerTick = 4096
+
+    /// Ceiling on distinct tenants. `weightedTenants` expands each tenant by its
+    /// arrival weight, so the pick list is bounded by
+    /// `maxTenants × maxArrivalWeight` rather than by nothing.
+    public static let maxTenants = 1024
+
     public init(
         tenants: [TenantProfile],
         catalog: SnapshotCatalog,
@@ -119,14 +129,22 @@ public struct WorkloadSpec: Sendable {
         seed: UInt64
     ) {
         self.burstJitter = max(0, burstJitter)
-        self.tenants = tenants
+        self.tenants = Array(tenants.prefix(WorkloadSpec.maxTenants))
         self.catalog = catalog
         self.horizonTicks = Saturating.clamp(horizonTicks, to: 0...WorkloadSpec.maxHorizonTicks)
         self.hostCount = Saturating.clamp(hostCount, to: 0...WorkloadSpec.maxHostCount)
         self.hostCapacityBytes = max(0, hostCapacityBytes)
-        self.baseArrivalsPerTick = max(0, baseArrivalsPerTick)
+        // Every one of these feeds `arrivalTrace`'s per-tick batch, which
+        // reserves capacity for `base + burstSize + jitter` and then loops that
+        // many times. Clamping to `max(0, …)` alone leaves a public initializer
+        // taking a plain `Int` able to request an `Int.max`-element allocation —
+        // the identical hazard `maxArrivalWeight` and `maxHorizonTicks` exist
+        // to close, missed here on the first pass.
+        self.baseArrivalsPerTick = Saturating.clamp(
+            baseArrivalsPerTick, to: 0...WorkloadSpec.maxArrivalsPerTick
+        )
         self.burstEveryTicks = max(1, burstEveryTicks)
-        self.burstSize = max(0, burstSize)
+        self.burstSize = Saturating.clamp(burstSize, to: 0...WorkloadSpec.maxArrivalsPerTick)
         self.seed = seed
     }
 
@@ -150,7 +168,9 @@ public struct WorkloadSpec: Sendable {
         var nextJobID = 0
         for tick in 0..<horizonTicks {
             let isBurst = Saturating.remainder(tick, burstEveryTicks) == 0
-            let jitter = (isBurst && burstJitter > 0) ? rng.int(in: 0...burstJitter) : 0
+            let jitter = (isBurst && burstJitter > 0)
+                ? rng.int(in: 0...min(burstJitter, WorkloadSpec.maxArrivalsPerTick))
+                : 0
             let arrivals = isBurst
                 ? Saturating.add(Saturating.add(baseArrivalsPerTick, burstSize), jitter)
                 : baseArrivalsPerTick

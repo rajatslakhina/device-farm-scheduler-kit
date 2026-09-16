@@ -106,9 +106,13 @@ public enum ReferenceWorkload {
             tenants: [
                 TenantProfile(
                     id: checkout,
-                    // DRR quanta are in the same unit as service time, and each
-                    // is >= that tenant's longest job so a single large run can
-                    // always eventually be afforded.
+                    // DRR quanta are in the same unit as service time. They are
+                    // deliberately NOT all >= their tenant's longest job —
+                    // `payments` has quantum 25 against jobs of up to 80 ticks,
+                    // which is exactly the case classic DRR forbids. It works
+                    // because `SchedulerState.deficitCeiling` stretches to the
+                    // largest waiting job, and this fixture exists partly to
+                    // exercise that path rather than tiptoe around it.
                     quantum: 90,
                     snapshots: [checkoutBasket, checkoutGuest],
                     arrivalWeight: 12,
@@ -166,7 +170,13 @@ public enum ReferenceWorkload {
     public static func makeCostModel() -> PoolCostModel {
         // One warm host costs 3 units per interval to hold; one cold start costs
         // 40 units of engineer-waiting. The ratio is what the sizer reads.
-        PoolCostModel(idleHostCostPerInterval: 3, coldStartCostPerJob: 40)
+        //
+        // Built through the `Double` initializer on purpose. Real cost figures
+        // arrive as division results — an hourly instance price over an interval
+        // count — and that arithmetic produces NaN and infinity, which
+        // `Int(Double)` traps on. Routing the package's own fixture through the
+        // guarded path keeps that path exercised instead of ornamental.
+        PoolCostModel(idleHostCostPerInterval: 3.0, coldStartCostPerJob: 40.0)
     }
 
     public static func makeAdmissionPolicy() -> AdmissionPolicy {

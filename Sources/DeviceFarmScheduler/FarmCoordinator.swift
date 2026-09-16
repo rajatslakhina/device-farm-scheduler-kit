@@ -53,10 +53,18 @@ public actor FarmCoordinator {
     /// Moves the clock, reclaims dead leases, and dispatches what it can.
     ///
     /// Returns the leases granted this tick. A job whose lease was reclaimed is
-    /// re-enqueued carrying its *original* `enqueuedTick`. It goes to the back
-    /// of the tenant's array, but both shipped policies order candidates by
-    /// `enqueuedTick` rather than by array position, so it keeps its place in
-    /// line — losing a host is the farm's fault, not the job's.
+    /// re-enqueued carrying its *original* `enqueuedTick`, and appended to the
+    /// back of its tenant's array.
+    ///
+    /// What that buys depends on the policy, and it is worth being exact rather
+    /// than reassuring. `StrictFairnessPolicy` orders candidates purely by
+    /// `enqueuedTick`, so a requeued job keeps its exact place in line. The two
+    /// affinity-ranking policies — including the shipped default — rank by warm
+    /// depth *first* and use `enqueuedTick` only to break ties, so a reclaimed
+    /// job whose host was taken can lose to a newer job that happens to be
+    /// warmer. Its age still protects it against equally-warm newcomers, and
+    /// the DRR outer loop still bounds how long its tenant can be passed over,
+    /// but "it keeps its place in line" is true only under strict fairness.
     @discardableResult
     public func tick(to newTick: Int) -> [RunLease] {
         state.advance(to: newTick)
