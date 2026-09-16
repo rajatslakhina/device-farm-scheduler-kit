@@ -118,9 +118,12 @@ public final class FarmConsoleModel {
     /// compares the budget the farm would have quoted against the wait an
     /// unrestricted run produced. That is the useful comparison for choosing a
     /// policy (you see the unclipped cost), and it is emphatically not a report
-    /// that admission control ran and held. On this configuration the same
-    /// policy's per-tenant backlog also exceeds `maxQueuedPerTenant`, which is
-    /// another way of saying the same thing.
+    /// that admission control ran and held.
+    ///
+    /// `exceedsTenantQuota` says whether the *selected* policy also ran past
+    /// `maxQueuedPerTenant`. On the demo's six-host fleet that is false for the
+    /// default (Layered leaves checkout 64, search 0, payments 5 against a cap
+    /// of 96) and true for Strict fairness, which leaves checkout holding 119.
     public var waitBudgetTicks: Int {
         configuration.admissionPolicy.waitBudgetTicks
     }
