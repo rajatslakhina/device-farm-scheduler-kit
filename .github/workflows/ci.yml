@@ -23,6 +23,9 @@ jobs:
       # a comment, not an invariant — someone adds one `await` to
       # FarmCoordinator.tick tomorrow and every test still passes. So CI runs it.
       - name: Enforce the no-suspension-point invariant in the scheduler core
+        # Explicit bash: the swift:6.0 container's default shell is dash, which
+        # has no `pipefail` and fails the step on `set -o pipefail` alone.
+        shell: bash
         run: |
           set -euo pipefail
 
