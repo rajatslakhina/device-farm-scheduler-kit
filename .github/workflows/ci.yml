@@ -18,6 +18,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The README calls "no method on this actor contains an `await`" a
+      # property you can check with grep. If nobody ever runs the grep, that is
+      # a comment, not an invariant — someone adds one `await` to
+      # FarmCoordinator.tick tomorrow and every test still passes. So CI runs it.
+      - name: Enforce the no-suspension-point invariant in the scheduler core
+        run: |
+          # Comment lines are excluded: the invariant is documented in prose
+          # that necessarily contains the word.
+          FOUND=$(grep -rn '\bawait\b' Sources/ --include='*.swift' \
+                  | grep -vE ':[0-9]+:[[:space:]]*//' || true)
+          if [ -n "$FOUND" ]; then
+            echo "$FOUND"
+            echo "::error::Sources/ must contain no 'await'. FarmCoordinator's freedom"
+            echo "::error::from actor reentrancy depends on there being no suspension"
+            echo "::error::point between reading state and writing it."
+            exit 1
+          fi
+          echo "OK: no suspension points in Sources/"
+
       # `swift build` on an up-to-date tree compiles nothing and still prints
       # "Build complete!", which is evidence of nothing. Removing .build first
       # is what makes the zero-warning claim mean something.
