@@ -24,15 +24,24 @@ jobs:
       # FarmCoordinator.tick tomorrow and every test still passes. So CI runs it.
       - name: Enforce the no-suspension-point invariant in the scheduler core
         run: |
-          # Comment lines are excluded: the invariant is documented in prose
-          # that necessarily contains the word.
-          FOUND=$(grep -rn '\bawait\b' Sources/ --include='*.swift' \
+          set -euo pipefail
+
+          # Fail loudly if the target vanishes. A check that silently passes
+          # when its directory is renamed is worse than no check.
+          test -d Sources || { echo "::error::Sources/ not found"; exit 1; }
+
+          # `async let` is also a suspension point — the compiler inserts an
+          # implicit await at end of scope — and contains no `await` token, so
+          # grepping for `await` alone misses it. Comment lines are excluded
+          # because the invariant is documented in prose that must name it.
+          FOUND=$(grep -rnE '\bawait\b|\basync[[:space:]]+let\b' Sources/ --include='*.swift' \
                   | grep -vE ':[0-9]+:[[:space:]]*//' || true)
+
           if [ -n "$FOUND" ]; then
             echo "$FOUND"
-            echo "::error::Sources/ must contain no 'await'. FarmCoordinator's freedom"
-            echo "::error::from actor reentrancy depends on there being no suspension"
-            echo "::error::point between reading state and writing it."
+            echo "::error::Sources/ must contain no suspension points. FarmCoordinator's"
+            echo "::error::freedom from actor reentrancy depends on there being none"
+            echo "::error::between reading state and writing it."
             exit 1
           fi
           echo "OK: no suspension points in Sources/"
