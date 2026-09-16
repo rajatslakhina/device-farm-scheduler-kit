@@ -134,16 +134,54 @@ final class PoolSizerTests: XCTestCase {
         XCTAssertLessThan(result.recommendedDepth, peakDepth)
     }
 
-    /// The reference workload's own curve, checked for internal consistency
-    /// rather than for a particular answer — the answer is a property of the
-    /// cost model, and the cost model is the user's to choose.
-    func testReferenceWorkloadProducesAUsableCurve() {
-        let histogram = ReferenceWorkload.makeArrivalHistogram()
-        XCTAssertFalse(histogram.isEmpty)
-        let result = PoolSizer.size(histogram: histogram, model: ReferenceWorkload.makeCostModel())
-        XCTAssertEqual(result.curve.count, Saturating.add(histogram.maxObserved, 1))
-        XCTAssertGreaterThanOrEqual(result.recommendedDepth, 0)
-        XCTAssertLessThanOrEqual(result.recommendedDepth, histogram.maxObserved)
+    /// The observation window is the sizer's load-bearing input, and getting it
+    /// wrong is silent. Bucketing the same trace two ways must produce two
+    /// different answers, or the window is doing nothing.
+    ///
+    /// (`curve.count == maxObserved + 1` and `0 <= depth <= maxObserved` are
+    /// deliberately *not* asserted here: all three hold by construction of
+    /// `PoolSizer.size`, so a sizer hardcoded to return depth 0 would pass them.
+    /// The real curve is pinned in `GoldenNumbersTests`.)
+    func testObservationWindowChangesTheAnswer() {
+        let trace = ReferenceWorkload.makeSpec().arrivalTrace()
+        let model = ReferenceWorkload.makeCostModel()
+
+        let perTick = PoolSizer.size(
+            histogram: ArrivalHistogram(trace: trace, windowTicks: 1), model: model
+        )
+        let windowed = PoolSizer.size(
+            histogram: ArrivalHistogram(
+                trace: trace, windowTicks: ReferenceWorkload.observationWindowTicks
+            ),
+            model: model
+        )
+
+        XCTAssertEqual(perTick.recommendedDepth, 0, "per-tick bucketing should size to zero")
+        XCTAssertGreaterThan(
+            windowed.recommendedDepth, perTick.recommendedDepth,
+            "windowing the same arrivals must change the recommendation"
+        )
+    }
+
+    func testWindowedHistogramIsInvariantToWindowsLargerThanTheTrace() {
+        let trace = ReferenceWorkload.makeSpec().arrivalTrace()
+        let huge = ArrivalHistogram(trace: trace, windowTicks: 100_000)
+        // One window covering everything: a single observation holding every job.
+        XCTAssertEqual(huge.totalIntervals, 1)
+        XCTAssertEqual(huge.maxObserved, min(251, ArrivalHistogram.maxTrackedArrivals))
+    }
+
+    func testWindowOfZeroIsClampedRatherThanDividingByZero() {
+        let trace = ReferenceWorkload.makeSpec().arrivalTrace()
+        let clamped = ArrivalHistogram(trace: trace, windowTicks: 0)
+        let one = ArrivalHistogram(trace: trace, windowTicks: 1)
+        XCTAssertEqual(clamped.counts, one.counts)
+    }
+
+    func testEmptyTraceProducesAnEmptyHistogram() {
+        let histogram = ArrivalHistogram(trace: [], windowTicks: 30)
+        XCTAssertTrue(histogram.isEmpty)
+        XCTAssertEqual(histogram.maxObserved, 0)
     }
 }
 

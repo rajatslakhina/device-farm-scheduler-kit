@@ -19,19 +19,49 @@ final class PlacementPolicyTests: XCTestCase {
         return (all[0], all[1], all[2])
     }
 
-    func testAllThreePoliciesSeeIdenticalArrivals() {
-        let spec = ReferenceWorkload.makeSpec()
-        let first = spec.arrivalTrace()
-        let second = spec.arrivalTrace()
-        XCTAssertEqual(first.map(\.count), second.map(\.count))
-        XCTAssertEqual(first.flatMap { $0 }.map(\.id), second.flatMap { $0 }.map(\.id))
-        XCTAssertGreaterThan(first.flatMap { $0 }.count, 0, "workload produced no jobs")
+    /// Determinism against *fixed expected values*, not against a second call.
+    ///
+    /// Comparing two calls in one process is the classic vacuous determinism
+    /// test: it passes for any pure function, including one that ignores the
+    /// seed entirely, and it cannot detect the hazard this codebase actually
+    /// defends against — Swift's per-process Dictionary hash seed is constant,
+    /// so dictionary-iteration nondeterminism is invisible within a process.
+    /// Pinning the first and last job of the trace catches a changed generator,
+    /// a changed seed, and a changed weighting; it is checked across processes
+    /// by CI running the suite on both Linux and macOS.
+    func testArrivalTraceMatchesFixedExpectedValues() {
+        let jobs = ReferenceWorkload.makeSpec().arrivalTrace().flatMap { $0 }
+        XCTAssertEqual(jobs.count, 251)
+
+        guard let first = jobs.first, let last = jobs.last else {
+            return XCTFail("workload produced no jobs")
+        }
+        XCTAssertEqual(first.id, JobID(0))
+        XCTAssertEqual(first.tenant, ReferenceWorkload.search)
+        XCTAssertEqual(first.snapshot, ReferenceWorkload.searchEmpty)
+        XCTAssertEqual(first.serviceTicks, 27)
+        XCTAssertEqual(first.enqueuedTick, 0)
+
+        XCTAssertEqual(last.id, JobID(250))
+        XCTAssertEqual(last.enqueuedTick, 1_770)
+
+        // Ordering within a tick is part of the contract: a stable schedule
+        // needs a stable trace, not merely a reproducible multiset.
+        XCTAssertEqual(jobs.map(\.id.rawValue), Array(0..<251))
     }
 
-    func testSimulationIsDeterministic() {
-        let a = FarmSimulation.compareShippedPolicies(spec: ReferenceWorkload.makeSpec())
-        let b = FarmSimulation.compareShippedPolicies(spec: ReferenceWorkload.makeSpec())
-        XCTAssertEqual(a, b, "the same spec produced two different runs")
+    /// The three shipped policies must genuinely see one shared trace. This
+    /// drives `compareShippedPolicies` — the thing that does the sharing — and
+    /// checks the jobs each policy accounted for add up to the same workload.
+    func testAllThreePoliciesAccountForTheSameWorkload() {
+        let spec = ReferenceWorkload.makeSpec()
+        let total = spec.arrivalTrace().flatMap { $0 }.count
+        for report in FarmSimulation.compareShippedPolicies(spec: spec) {
+            XCTAssertEqual(
+                Saturating.add(report.dispatched, report.jobsLeftQueued), total,
+                "\(report.policyName) lost or invented jobs"
+            )
+        }
     }
 
     /// Affinity-first is expected to punish the small tenant. The harm shows up
@@ -167,40 +197,45 @@ final class PlacementPolicyTests: XCTestCase {
         )
     }
 
-    /// The knob has a cost, and it is the one theory predicts: a tenant allowed
-    /// to hold out longer for a warm host waits longer in the worst case.
-    func testALargerSkipBoundTradesWorstCaseWaitForEfficiency() {
+    /// The skip bound's full sweep, including the direction of the real
+    /// trade-off, is pinned in `GoldenNumbersTests.testSkipBoundSweepShapeIsStable`.
+    /// An earlier version of this file compared exactly two settings and
+    /// presented the result as a law; the sweep showed the curve is not
+    /// monotonic below the knee, so the two-point version was measuring a
+    /// coincidence.
+
+    /// `acceptThreshold` has to actually change what gets accepted.
+    ///
+    /// Asserting only that the farm still dispatches something would pass for an
+    /// implementation that ignored the parameter entirely, so this checks the
+    /// property the parameter names: a stricter threshold refuses more warm-ish
+    /// placements, which shows up as strictly more skipping and therefore fewer
+    /// runs started in the same window.
+    func testStricterAcceptThresholdRefusesMorePlacements() {
         let spec = ReferenceWorkload.makeSpec()
         let trace = spec.arrivalTrace()
 
-        let tuned = FarmSimulation.run(
-            spec: spec, policy: LayeredAffinityFairPolicy(), trace: trace
-        )
-        let patient = FarmSimulation.run(
-            spec: spec, policy: LayeredAffinityFairPolicy(maxSkips: 48), trace: trace
-        )
-
-        XCTAssertGreaterThan(
-            patient.worstTenantWaitTicks, tuned.worstTenantWaitTicks,
-            "a larger skip bound should show up as a longer worst-case wait"
-        )
-        XCTAssertLessThanOrEqual(
-            patient.totalRestoreMillis, tuned.totalRestoreMillis,
-            "and should pay for it with less restore time"
-        )
-    }
-
-    func testAcceptThresholdOfAccountMeansNeverSettleForLess() {
-        let spec = ReferenceWorkload.makeSpec()
-        let trace = spec.arrivalTrace()
-        // Demanding a fully-seeded match is strictly harder to satisfy than
-        // demanding the right OS build, so more turns end in a skip.
-        let strict = FarmSimulation.run(
+        let osThreshold = FarmSimulation.run(
             spec: spec,
-            policy: LayeredAffinityFairPolicy(maxSkips: 12, acceptThreshold: .account),
+            policy: LayeredAffinityFairPolicy(maxSkips: 24, acceptThreshold: .os),
             trace: trace
         )
-        XCTAssertGreaterThan(strict.dispatched, 0, "an impossible threshold deadlocked the farm")
+        let accountThreshold = FarmSimulation.run(
+            spec: spec,
+            policy: LayeredAffinityFairPolicy(maxSkips: 24, acceptThreshold: .account),
+            trace: trace
+        )
+
+        XCTAssertNotEqual(
+            accountThreshold, osThreshold,
+            "the two thresholds produced identical runs — acceptThreshold is being ignored"
+        )
+        XCTAssertLessThan(
+            accountThreshold.dispatched, osThreshold.dispatched,
+            "holding out for a fully-seeded host should cost throughput"
+        )
+        // And it must not deadlock: the skip bound still forces progress.
+        XCTAssertGreaterThan(accountThreshold.dispatched, 0)
     }
 
     // MARK: - Edge cases
@@ -412,11 +447,18 @@ final class PlacementPolicyTests: XCTestCase {
         XCTAssertNil(state.dispatch(wrongHost))
     }
 
-    func testEveryHostEndsTheRunWithAValidResidentSet() {
+    /// Audited after *every* tick, not just at the end.
+    ///
+    /// An end-state-only check is the exact weakness the store's own
+    /// differential test identifies and avoids: a later admission restores
+    /// whatever was orphaned, so a run that spent most of its life holding
+    /// unbootable layers can still finish with a clean resident set.
+    func testNoHostEverHoldsAnInvalidResidentSet() {
         let spec = ReferenceWorkload.makeSpec()
         var state = spec.makeState()
         let trace = spec.arrivalTrace()
         var policy = LayeredAffinityFairPolicy()
+        var auditedTicks = 0
 
         for tick in 0..<spec.horizonTicks {
             state.advance(to: tick)
@@ -427,11 +469,16 @@ final class PlacementPolicyTests: XCTestCase {
                 guard let placement = policy.nextPlacement(in: &state),
                       state.dispatch(placement) != nil else { break }
             }
+
+            for host in state.hosts {
+                let violations = SnapshotStoreAudit.violations(of: host.store)
+                if !violations.isEmpty {
+                    return XCTFail("\(host.id) at tick \(tick): \(violations)")
+                }
+            }
+            auditedTicks += 1
         }
 
-        for host in state.hosts {
-            let violations = SnapshotStoreAudit.violations(of: host.store)
-            XCTAssertTrue(violations.isEmpty, "\(host.id): \(violations)")
-        }
+        XCTAssertEqual(auditedTicks, spec.horizonTicks, "the audit loop exited early")
     }
 }

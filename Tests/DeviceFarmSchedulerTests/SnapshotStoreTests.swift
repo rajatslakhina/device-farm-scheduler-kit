@@ -220,6 +220,11 @@ final class SnapshotStoreTests: XCTestCase {
         return catalog
     }
 
+    /// Shared with `GoldenNumbersTests`, which pins the figures this fixture
+    /// produces against the numbers quoted in the README.
+    static func differentialTraceForGolden() -> [SnapshotKey] { differentialTrace }
+    static func differentialCatalogForGolden() -> SnapshotCatalog { differentialCatalog() }
+
     /// Base image plus two app layers plus one account layer.
     ///
     /// The number is chosen to put the store under real pressure. Give it enough

@@ -83,9 +83,41 @@ final class SaturatingArithmeticTests: XCTestCase {
         XCTAssertEqual(Saturating.sum([Int]()), 0)
     }
 
+    /// An unusable cost must read as maximally expensive, never as free.
+    ///
+    /// This is the one place `cost` deliberately differs from `int`, and the
+    /// difference decides whether a sizer picks the option it knows nothing
+    /// about. A NaN mapped to 0 would make "unknown" the cheapest depth on the
+    /// curve and get it recommended.
+    func testUnknownCostReadsAsExpensiveNotFree() {
+        XCTAssertEqual(Saturating.cost(Double.nan), Int.max)
+        XCTAssertEqual(Saturating.cost(Double.infinity), Int.max)
+        XCTAssertEqual(Saturating.cost(-Double.infinity), 0)
+        XCTAssertEqual(Saturating.cost(-5), 0, "a negative cost is a modelling error, not a credit")
+        XCTAssertEqual(Saturating.cost(12.9), 12)
+        XCTAssertEqual(Saturating.cost(1.8446744073709552e19), Int.max)
+    }
+
+    /// The `Double` overload exists so callers never have to write
+    /// `Int(someDouble)` themselves. Driving it with 0/0 proves the guard is on
+    /// the path a real caller takes, not just available in a helper nobody uses.
+    func testCostModelAcceptsHostileDoublesThroughItsPublicInitializer() {
+        let zero = 0.0
+        let model = PoolCostModel(
+            idleHostCostPerInterval: zero / zero,      // NaN
+            coldStartCostPerJob: 1.0 / zero           // +infinity
+        )
+        XCTAssertEqual(model.idleHostCostPerInterval, Int.max)
+        XCTAssertEqual(model.coldStartCostPerJob, Int.max)
+
+        let sane = PoolCostModel(idleHostCostPerInterval: 3.7, coldStartCostPerJob: 40.2)
+        XCTAssertEqual(sane.idleHostCostPerInterval, 3)
+        XCTAssertEqual(sane.coldStartCostPerJob, 40)
+    }
+
     /// The saturating helpers are only worth anything if the public API actually
-    /// routes hostile values through them. This drives a real sizing call with
-    /// costs that would overflow a plain `*` and asserts it returns a value.
+    /// routes hostile values through them. Exact expected values, not
+    /// "doesn't crash" — this file's own header refuses that test.
     func testPublicAPISurvivesOverflowingCostInputs() {
         let histogram = ArrivalHistogram(counts: [0, Int.max, Int.max])
         let model = PoolCostModel(
@@ -93,8 +125,14 @@ final class SaturatingArithmeticTests: XCTestCase {
             coldStartCostPerJob: Int.max
         )
         let result = PoolSizer.size(histogram: histogram, model: model)
-        XCTAssertFalse(result.curve.isEmpty)
-        XCTAssertGreaterThanOrEqual(result.recommendedDepth, 0)
-        XCTAssertLessThanOrEqual(result.recommendedDepth, histogram.maxObserved)
+
+        // Depth 0: idle cost 0; cold starts saturate, so the total saturates.
+        // Depth 1 and 2: idle cost saturates on the first multiply.
+        // Every point therefore pins to Int.max, and the tie-break to the
+        // smaller depth picks 0.
+        XCTAssertEqual(result.curve.map(\.totalCost), [Int.max, Int.max, Int.max])
+        XCTAssertEqual(result.curve.map(\.depth), [0, 1, 2])
+        XCTAssertEqual(result.recommendedDepth, 0)
+        XCTAssertEqual(result.minimumCost, Int.max)
     }
 }
