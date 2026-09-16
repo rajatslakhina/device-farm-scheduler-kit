@@ -240,7 +240,7 @@ Known limits, stated — and, where they are checkable, checked:
 ## Usage
 
 ```swift
-.package(url: "https://github.com/rajatslakhina/device-farm-scheduler-kit.git", from: "1.0.0")
+.package(url: "https://github.com/rajatslakhina/device-farm-scheduler-kit.git", from: "2.0.0")
 ```
 
 ```swift
