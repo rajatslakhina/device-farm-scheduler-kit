@@ -181,6 +181,17 @@ public struct RunLedger: Sendable {
 
     private var finalResults: [RunID: RunResult]
     private var highestToken: [RunID: FencingToken]
+
+    /// Every attempted write, in order, for auditing.
+    ///
+    /// **This grows without bound, deliberately, and it is the caller's job to
+    /// drain it.** Every other allocation in this package reachable from a
+    /// public initializer is capped; this one is not, because silently dropping
+    /// entries from an audit log is the one failure mode worse than an
+    /// unbounded audit log — a `LedgerAudit` run over a truncated trace would
+    /// report clean for violations that happened in the discarded prefix. A
+    /// farm running for weeks should periodically call `drainTrace()` and ship
+    /// the result somewhere durable.
     public private(set) var trace: [Entry]
 
     public init() {
@@ -192,6 +203,15 @@ public struct RunLedger: Sendable {
     public func result(for run: RunID) -> RunResult? { finalResults[run] }
 
     public var recordedRunCount: Int { finalResults.count }
+
+    /// Hands the accumulated trace to the caller and clears it.
+    ///
+    /// Audit it or persist it before discarding: `LedgerAudit.violations(in:)`
+    /// over a partial trace can only report on what it was given.
+    public mutating func drainTrace() -> [Entry] {
+        defer { trace.removeAll(keepingCapacity: true) }
+        return trace
+    }
 
     @discardableResult
     public mutating func record(

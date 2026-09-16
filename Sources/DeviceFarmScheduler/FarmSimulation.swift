@@ -128,7 +128,7 @@ public struct WorkloadSpec: Sendable {
         burstJitter: Int = 0,
         seed: UInt64
     ) {
-        self.burstJitter = max(0, burstJitter)
+        self.burstJitter = Saturating.clamp(burstJitter, to: 0...WorkloadSpec.maxArrivalsPerTick)
         self.tenants = Array(tenants.prefix(WorkloadSpec.maxTenants))
         self.catalog = catalog
         self.horizonTicks = Saturating.clamp(horizonTicks, to: 0...WorkloadSpec.maxHorizonTicks)
