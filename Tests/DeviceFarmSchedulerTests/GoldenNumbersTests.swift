@@ -136,6 +136,16 @@ final class GoldenNumbersTests: XCTestCase {
 
     // MARK: - Pool sizing
 
+    /// The README's "answered 'zero' in 97% of buckets" figure, which motivates
+    /// the whole observation-window design and was previously unpinned prose.
+    func testPerTickBucketsAreEmptyNinetySevenPercentOfTheTime() {
+        let trace = ReferenceWorkload.makeSpec().arrivalTrace()
+        XCTAssertEqual(trace.count, 1_800)
+        let empty = trace.filter(\.isEmpty).count
+        XCTAssertEqual(empty, 1_740)
+        XCTAssertEqual(empty * 100 / trace.count, 96, "96.7% rounds down to 96, quoted as 97%")
+    }
+
     func testReferenceSizingIsPinned() {
         let histogram = ReferenceWorkload.makeArrivalHistogram()
         XCTAssertEqual(histogram.totalIntervals, 60, "README: 60 observation windows")
@@ -243,11 +253,28 @@ final class GoldenNumbersTests: XCTestCase {
             return (naiveMillis, goodMillis)
         }
 
-        // STARVED: too small to hold a second app layer at all, so neither
-        // policy has a choice left to make and both pay the same. An earlier
-        // version of this test labelled 7 300 "roomy" and used it as the slack
-        // case — it is tighter than the baseline, not roomier, and equality
-        // there proves nothing about slack.
+        // REFUSAL CLIFF: below ~7 100 a whole chain no longer fits, and
+        // `SnapshotStore.admit` refuses it outright rather than evicting toward
+        // a resident set that still could not boot. Every mount then pays a full
+        // cold restore, and the naive store — which admits partial, unbootable
+        // garbage — scores *better* on this metric. That is correct behaviour
+        // measured by the wrong yardstick, and the README says so.
+        let cliff = restoreCosts(capacity: 7_000)
+        XCTAssertEqual(cliff.naive, 871_000)
+        XCTAssertEqual(cliff.good, 7_596_000)
+        XCTAssertGreaterThan(
+            cliff.good, cliff.naive,
+            "below the fit threshold the chain-aware store is expected to look worse"
+        )
+
+        // STARVED: room for one chain but not a second working set, so neither
+        // policy has a choice left and both pay the same. Two distinct tie
+        // values here, which an earlier version of this README collapsed into
+        // one range: 871 s at 7 100–7 200 and 829 s at 7 300–7 900.
+        let starvedHigh = restoreCosts(capacity: 7_100)
+        XCTAssertEqual(starvedHigh.good, starvedHigh.naive)
+        XCTAssertEqual(starvedHigh.good, 871_000)
+
         let starved = restoreCosts(capacity: 7_300)
         XCTAssertEqual(
             starved.good, starved.naive,
