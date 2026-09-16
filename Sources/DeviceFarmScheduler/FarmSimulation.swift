@@ -45,6 +45,14 @@ public struct TenantProfile: Sendable {
     public let arrivalWeight: Int
     public let serviceTicks: ClosedRange<Int>
 
+    /// Ceiling on a single tenant's arrival weight.
+    ///
+    /// Weights are expanded into a pick list, so an unbounded weight is an
+    /// unbounded allocation from a public initializer taking a plain `Int`.
+    /// `ArrivalHistogram` guards the same hazard the same way; a relative weight
+    /// beyond this is a typo, not a workload.
+    public static let maxArrivalWeight = 4096
+
     public init(
         id: TenantID,
         quantum: Int,
@@ -55,7 +63,9 @@ public struct TenantProfile: Sendable {
         self.id = id
         self.quantum = max(1, quantum)
         self.snapshots = snapshots
-        self.arrivalWeight = max(0, arrivalWeight)
+        self.arrivalWeight = Saturating.clamp(
+            arrivalWeight, to: 0...TenantProfile.maxArrivalWeight
+        )
         self.serviceTicks = serviceTicks
     }
 }
@@ -86,6 +96,16 @@ public struct WorkloadSpec: Sendable {
     public let burstJitter: Int
     public let seed: UInt64
 
+    /// Ceiling on the simulated horizon. The trace is materialised as one array
+    /// entry per tick, so an unbounded horizon is an unbounded allocation from a
+    /// public initializer. A quarter of a million ticks is ~3 days of farm time
+    /// at one tick per second — past any window worth replaying.
+    public static let maxHorizonTicks = 250_000
+
+    /// Ceiling on fleet size, for the same reason: `makeState` allocates a host
+    /// per unit.
+    public static let maxHostCount = 4096
+
     public init(
         tenants: [TenantProfile],
         catalog: SnapshotCatalog,
@@ -101,8 +121,8 @@ public struct WorkloadSpec: Sendable {
         self.burstJitter = max(0, burstJitter)
         self.tenants = tenants
         self.catalog = catalog
-        self.horizonTicks = max(0, horizonTicks)
-        self.hostCount = max(0, hostCount)
+        self.horizonTicks = Saturating.clamp(horizonTicks, to: 0...WorkloadSpec.maxHorizonTicks)
+        self.hostCount = Saturating.clamp(hostCount, to: 0...WorkloadSpec.maxHostCount)
         self.hostCapacityBytes = max(0, hostCapacityBytes)
         self.baseArrivalsPerTick = max(0, baseArrivalsPerTick)
         self.burstEveryTicks = max(1, burstEveryTicks)

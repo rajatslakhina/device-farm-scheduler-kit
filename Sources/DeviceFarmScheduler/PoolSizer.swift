@@ -41,6 +41,36 @@ public struct ArrivalHistogram: Sendable, Equatable {
         self.counts = buckets
     }
 
+    /// Builds a histogram from a per-tick arrival trace by bucketing it into
+    /// fixed observation windows.
+    ///
+    /// **The window is required, and that is the point.** Bucketing per tick
+    /// asks "how many runs arrived in this one second", which on any bursty
+    /// workload is answered "zero" in the overwhelming majority of buckets — and
+    /// from that the sizer correctly concludes no warm pool is ever worth its
+    /// idle cost. That answer is right about the model and wrong about the farm.
+    /// The window has to match the timescale over which a host usefully stays
+    /// warm, so it is a parameter every caller must state rather than a default
+    /// anyone can drift away from.
+    ///
+    /// Every caller in this package routes through here, so the UI and the
+    /// fixtures cannot disagree about what an observation is.
+    public init(trace: [[Job]], windowTicks: Int) {
+        let window = Saturating.clamp(
+            windowTicks, to: 1...max(1, ArrivalHistogram.maxTrackedArrivals)
+        )
+        var observations: [Int] = []
+        var index = 0
+        while index < trace.count {
+            // `end` is clamped to `trace.count` and `index < end` always holds,
+            // so the slice bounds are valid.
+            let end = min(Saturating.add(index, window), trace.count)
+            observations.append(trace[index..<end].reduce(0) { Saturating.add($0, $1.count) })
+            index = end
+        }
+        self.init(observations: observations)
+    }
+
     /// Ceiling on histogram width. Derived from nothing clever — it is simply
     /// larger than any real fleet and small enough to allocate safely.
     public static let maxTrackedArrivals = 4096
@@ -86,6 +116,22 @@ public struct PoolCostModel: Sendable, Equatable {
     public init(idleHostCostPerInterval: Int, coldStartCostPerJob: Int) {
         self.idleHostCostPerInterval = max(0, idleHostCostPerInterval)
         self.coldStartCostPerJob = max(0, coldStartCostPerJob)
+    }
+
+    /// Builds a cost model from `Double` inputs without trapping on any of them.
+    ///
+    /// This is the overload real callers reach for, because cost figures arrive
+    /// as `Double` — a per-hour instance price divided by an interval count, a
+    /// number typed into a capacity dashboard, an average pulled from a billing
+    /// API. Every one of those can produce NaN (0/0), infinity (x/0) or a value
+    /// past `Int.max`, and `Int(Double)` traps on all three. ``Saturating/cost``
+    /// resolves each in the direction that cannot silently make an option look
+    /// cheap.
+    public init(idleHostCostPerInterval: Double, coldStartCostPerJob: Double) {
+        self.init(
+            idleHostCostPerInterval: Saturating.cost(idleHostCostPerInterval),
+            coldStartCostPerJob: Saturating.cost(coldStartCostPerJob)
+        )
     }
 }
 

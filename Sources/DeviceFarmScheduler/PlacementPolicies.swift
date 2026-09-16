@@ -116,6 +116,27 @@ public struct LayeredAffinityFairPolicy: PlacementPolicy {
     /// Consecutive turns a tenant may pass up before it is served cold anyway.
     /// This is the fairness bound: no tenant is ever delayed more than this many
     /// of its own turns.
+    ///
+    /// The default of 24 comes from an actual sweep on the reference workload,
+    /// shipped as `testSkipBoundSweepShapeIsStable`. The shape is not the tidy
+    /// monotonic trade-off theory suggests, and the numbers are worth stating:
+    ///
+    /// ```
+    /// maxSkips   started   warm    restore   worst wait   worst-served
+    ///        0       142    38%    137 min       1080 s   checkout
+    ///        8       222    54%     68 min        364 s   checkout
+    ///       12       220    58%     67 min        404 s   checkout
+    ///       24       240    62%     48 min        348 s   checkout   <- default
+    ///       40       238    60%     48 min        660 s   payments
+    ///       64       235    60%     48 min        858 s   payments
+    /// ```
+    ///
+    /// Below the knee the metrics move together rather than trading off, so
+    /// there is no tuning dilemma there — 24 simply dominates every smaller
+    /// value on all five. The genuine trade-off only appears *past* it: from
+    /// about 28 onward the worst-served tenant flips to the smallest one and
+    /// its wait climbs without bound, which is delay scheduling degenerating
+    /// into the starvation it exists to prevent.
     public let maxSkips: Int
 
     /// The warmth a placement must already have for the tenant to take it
@@ -123,7 +144,7 @@ public struct LayeredAffinityFairPolicy: PlacementPolicy {
     /// the boundary that separates a ~30 second restore from a ~3 minute one.
     public let acceptThreshold: SnapshotLayer
 
-    public init(maxSkips: Int = 12, acceptThreshold: SnapshotLayer = .os) {
+    public init(maxSkips: Int = 24, acceptThreshold: SnapshotLayer = .os) {
         self.maxSkips = max(0, maxSkips)
         self.acceptThreshold = acceptThreshold
     }

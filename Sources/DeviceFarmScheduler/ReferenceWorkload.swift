@@ -157,18 +157,10 @@ public enum ReferenceWorkload {
 
     /// Arrival histogram matching the workload's burst pattern, for the sizer.
     public static func makeArrivalHistogram() -> ArrivalHistogram {
-        let trace = makeSpec().arrivalTrace()
-        let window = max(1, observationWindowTicks)
-        var observations: [Int] = []
-        var index = 0
-        while index < trace.count {
-            // `end` is clamped to `trace.count` and `index < end` always holds,
-            // so the slice bounds are valid.
-            let end = min(Saturating.add(index, window), trace.count)
-            observations.append(trace[index..<end].reduce(0) { Saturating.add($0, $1.count) })
-            index = end
-        }
-        return ArrivalHistogram(observations: observations)
+        ArrivalHistogram(
+            trace: makeSpec().arrivalTrace(),
+            windowTicks: observationWindowTicks
+        )
     }
 
     public static func makeCostModel() -> PoolCostModel {

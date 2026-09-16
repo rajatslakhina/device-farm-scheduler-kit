@@ -68,9 +68,11 @@ public enum Saturating {
 
     /// `Int(d)` that never traps on NaN, ±infinity, or an out-of-range value.
     ///
-    /// `Int(Double)` traps on all three. NaN has no ordering, so it is mapped to
-    /// `range.lowerBound` deliberately: in this module every `Double` input is a
-    /// cost or a rate, and "unknown cost" must not read as "free".
+    /// `Int(Double)` traps on all three. NaN has no ordering and therefore no
+    /// defensible numeric answer, so it is mapped to `range.lowerBound` and the
+    /// choice is left to the caller's range. Callers converting a *cost* should
+    /// use ``cost(_:)`` instead, which resolves NaN in the safe direction for
+    /// that meaning.
     @inlinable
     public static func int(
         _ d: Double,
@@ -87,6 +89,21 @@ public enum Saturating {
         if d <= lower { return range.lowerBound }
         if d >= upper { return range.upperBound }
         return Int(d)
+    }
+
+    /// Converts a non-negative *cost* from `Double` without trapping.
+    ///
+    /// Differs from ``int(_:clampedTo:)`` in exactly one place, and it is the
+    /// place that matters: an unusable input (NaN) resolves to `Int.max`, not to
+    /// zero. A cost arriving as NaN means the caller does not know what this
+    /// costs, and the one reading a scheduler must never take from that is
+    /// "free" — that would make the unknown option look like the cheapest one
+    /// and get it chosen. Infinity and out-of-range values clamp the same way;
+    /// negatives clamp to zero, since a negative cost is a modelling error.
+    @inlinable
+    public static func cost(_ d: Double) -> Int {
+        guard !d.isNaN else { return Int.max }
+        return int(d, clampedTo: 0...Int.max)
     }
 
     /// Clamps `value` into `range` without trapping on an inverted range.

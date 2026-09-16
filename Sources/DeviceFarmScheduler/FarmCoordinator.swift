@@ -52,10 +52,11 @@ public actor FarmCoordinator {
 
     /// Moves the clock, reclaims dead leases, and dispatches what it can.
     ///
-    /// Returns the leases granted this tick. Requeued jobs from reclaimed leases
-    /// are put back at the front of their tenant's queue by their original
-    /// enqueue time, so a reclaim does not cost a job its place in line — losing
-    /// a host is the farm's fault, not the job's.
+    /// Returns the leases granted this tick. A job whose lease was reclaimed is
+    /// re-enqueued carrying its *original* `enqueuedTick`. It goes to the back
+    /// of the tenant's array, but both shipped policies order candidates by
+    /// `enqueuedTick` rather than by array position, so it keeps its place in
+    /// line — losing a host is the farm's fault, not the job's.
     @discardableResult
     public func tick(to newTick: Int) -> [RunLease] {
         state.advance(to: newTick)
