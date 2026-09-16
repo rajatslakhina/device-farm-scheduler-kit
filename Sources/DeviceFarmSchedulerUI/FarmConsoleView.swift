@@ -12,6 +12,13 @@ public struct FarmConsoleView: View {
 
     @State private var model: FarmConsoleModel
 
+    /// - Note: the whole three-policy replay runs in `FarmConsoleModel.init`,
+    ///   so the first frame already has real numbers and there is no loading
+    ///   state. The cost is that SwiftUI re-invokes this initializer on every
+    ///   re-evaluation of the enclosing body and discards the extra instance —
+    ///   fine under a `WindowGroup`, wasteful under a frequently-updating
+    ///   parent. If you embed this somewhere hot, hold the model yourself and
+    ///   pass it down rather than reconstructing the view's configuration.
     public init(configuration: FarmConsoleConfiguration) {
         _model = State(wrappedValue: FarmConsoleModel(configuration: configuration))
     }
@@ -158,8 +165,14 @@ public struct FarmConsoleView: View {
                 )
                 .font(.footnote.weight(.semibold))
                 Text(
-                    "AdmissionController quotes every caller a \(model.waitBudgetTicks)s "
-                        + "budget at submit time. This is what the policy actually delivered."
+                    "This replay admits every arrival — admission control is not "
+                        + "applied — so you are seeing the unclipped cost against the "
+                        + "\(model.waitBudgetTicks)s budget AdmissionController would have "
+                        + "quoted."
+                        + (model.exceedsTenantQuota
+                            ? " A tenant also ends up holding more than the "
+                                + "\(model.maxQueuedPerTenant)-job per-tenant cap."
+                            : "")
                 )
                 .font(.caption2)
                 .foregroundStyle(.secondary)

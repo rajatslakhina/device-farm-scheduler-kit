@@ -53,7 +53,11 @@ public final class FarmConsoleModel {
 
     public init(configuration: FarmConsoleConfiguration) {
         self.configuration = configuration
-        self.tenantOrder = configuration.spec.tenants.map(\.id).sorted()
+        // De-duplicated: these become `ForEach` identities, and `SchedulerState`
+        // already collapses duplicate tenant ids via `uniquingKeysWith`. A spec
+        // carrying two profiles with the same id would otherwise render two rows
+        // sharing one identity.
+        self.tenantOrder = Array(Set(configuration.spec.tenants.map(\.id))).sorted()
 
         // Bucketed into observation windows, not per tick. Per-tick bucketing
         // is the failure this kit's own README names, and shipping it here
@@ -104,14 +108,33 @@ public final class FarmConsoleModel {
 
     // MARK: - Admission
 
-    /// The wait the farm promises at submit time.
+    /// The wait budget configured on `AdmissionController`.
     ///
-    /// `AdmissionController` quotes this to every caller. Showing it next to
-    /// what the policy actually delivered is the only way to see that the
-    /// promise was broken — an estimate nobody ever checks against an outcome is
-    /// not a service level, it is a decoration.
+    /// Shown next to what the policy actually delivered, because an estimate
+    /// nobody ever checks against an outcome is not a service level.
+    ///
+    /// **Important, and stated in the UI too:** `FarmSimulation` deliberately
+    /// does *not* apply admission control — it enqueues every arrival. So this
+    /// compares the budget the farm would have quoted against the wait an
+    /// unrestricted run produced. That is the useful comparison for choosing a
+    /// policy (you see the unclipped cost), and it is emphatically not a report
+    /// that admission control ran and held. On this configuration the same
+    /// policy's per-tenant backlog also exceeds `maxQueuedPerTenant`, which is
+    /// another way of saying the same thing.
     public var waitBudgetTicks: Int {
         configuration.admissionPolicy.waitBudgetTicks
+    }
+
+    /// Per-tenant queue cap from the same policy, for the same disclosure.
+    public var maxQueuedPerTenant: Int {
+        configuration.admissionPolicy.maxQueuedPerTenant
+    }
+
+    /// Whether the unrestricted run left any tenant holding more work than
+    /// admission control would have accepted.
+    public var exceedsTenantQuota: Bool {
+        guard let report = selectedReport else { return false }
+        return tenantOrder.contains { report.stillQueued(for: $0) > maxQueuedPerTenant }
     }
 
     /// Whether the selected policy blew through that promise.
