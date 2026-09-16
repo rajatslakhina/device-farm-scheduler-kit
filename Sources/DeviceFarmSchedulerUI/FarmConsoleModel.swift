@@ -14,18 +14,28 @@ public struct FarmConsoleConfiguration: Sendable {
     public let costModel: PoolCostModel
     public let admissionPolicy: AdmissionPolicy
 
+    /// How long a stretch of time counts as one observation for pool sizing.
+    ///
+    /// Required, with no default, because getting it wrong is silent: bucket
+    /// per tick and the sizer answers a question about seconds instead of about
+    /// bursts, recommends a depth of zero, and draws a rising curve that looks
+    /// like a finished chart. See `ArrivalHistogram.init(trace:windowTicks:)`.
+    public let observationWindowTicks: Int
+
     public init(
         title: String,
         subtitle: String,
         spec: WorkloadSpec,
         costModel: PoolCostModel,
-        admissionPolicy: AdmissionPolicy
+        admissionPolicy: AdmissionPolicy,
+        observationWindowTicks: Int
     ) {
         self.title = title
         self.subtitle = subtitle
         self.spec = spec
         self.costModel = costModel
         self.admissionPolicy = admissionPolicy
+        self.observationWindowTicks = max(1, observationWindowTicks)
     }
 }
 
@@ -45,8 +55,12 @@ public final class FarmConsoleModel {
         self.configuration = configuration
         self.tenantOrder = configuration.spec.tenants.map(\.id).sorted()
 
+        // Bucketed into observation windows, not per tick. Per-tick bucketing
+        // is the failure this kit's own README names, and shipping it here
+        // would have put the bug in the one place a user actually sees.
         let histogram = ArrivalHistogram(
-            observations: configuration.spec.arrivalTrace().map(\.count)
+            trace: configuration.spec.arrivalTrace(),
+            windowTicks: configuration.observationWindowTicks
         )
         self.sizing = PoolSizer.size(histogram: histogram, model: configuration.costModel)
 
@@ -86,6 +100,28 @@ public final class FarmConsoleModel {
     /// Minutes of restore time, for a number a human can hold.
     public func restoreMinutes(_ millis: Int) -> Int {
         Saturating.divide(millis, by: 60_000)
+    }
+
+    // MARK: - Admission
+
+    /// The wait the farm promises at submit time.
+    ///
+    /// `AdmissionController` quotes this to every caller. Showing it next to
+    /// what the policy actually delivered is the only way to see that the
+    /// promise was broken — an estimate nobody ever checks against an outcome is
+    /// not a service level, it is a decoration.
+    public var waitBudgetTicks: Int {
+        configuration.admissionPolicy.waitBudgetTicks
+    }
+
+    /// Whether the selected policy blew through that promise.
+    public var breachesWaitBudget: Bool {
+        (selectedReport?.worstTenantWaitTicks ?? 0) > waitBudgetTicks
+    }
+
+    /// How far past the promise the worst-served tenant ended up, in ticks.
+    public var waitBudgetOverrunTicks: Int {
+        max(0, Saturating.subtract(selectedReport?.worstTenantWaitTicks ?? 0, waitBudgetTicks))
     }
 }
 #endif

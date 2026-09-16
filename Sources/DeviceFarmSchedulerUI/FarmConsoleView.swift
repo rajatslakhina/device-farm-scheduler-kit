@@ -24,6 +24,7 @@ public struct FarmConsoleView: View {
                     policyPicker
                     if let report = model.selectedReport {
                         kpiGrid(for: report)
+                        admissionBanner
                         tenantTable(for: report)
                     } else {
                         ContentUnavailableView(
@@ -135,6 +136,42 @@ public struct FarmConsoleView: View {
         .frame(maxWidth: .infinity, minHeight: 104, alignment: .topLeading)
         .padding(12)
         .background(tint.opacity(0.10), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    // MARK: - Admission promise
+
+    /// What the farm promised at submit time, against what it delivered.
+    private var admissionBanner: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(
+                systemName: model.breachesWaitBudget
+                    ? "exclamationmark.triangle.fill"
+                    : "checkmark.seal.fill"
+            )
+            .foregroundStyle(model.breachesWaitBudget ? .orange : .green)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(
+                    model.breachesWaitBudget
+                        ? "Wait budget missed by \(model.waitBudgetOverrunTicks)s"
+                        : "Within the \(model.waitBudgetTicks)s wait budget"
+                )
+                .font(.footnote.weight(.semibold))
+                Text(
+                    "AdmissionController quotes every caller a \(model.waitBudgetTicks)s "
+                        + "budget at submit time. This is what the policy actually delivered."
+                )
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .background(
+            (model.breachesWaitBudget ? Color.orange : Color.green).opacity(0.10),
+            in: RoundedRectangle(cornerRadius: 12)
+        )
     }
 
     // MARK: - Per-tenant
@@ -292,7 +329,8 @@ struct ProgressBar: View {
             subtitle: "8 hosts · 2 OS builds · 3 tenants · bursty agent fan-out",
             spec: ReferenceWorkload.makeSpec(),
             costModel: ReferenceWorkload.makeCostModel(),
-            admissionPolicy: ReferenceWorkload.makeAdmissionPolicy()
+            admissionPolicy: ReferenceWorkload.makeAdmissionPolicy(),
+            observationWindowTicks: ReferenceWorkload.observationWindowTicks
         )
     )
 }
